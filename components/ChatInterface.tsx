@@ -246,7 +246,7 @@ export default function ChatInterface() {
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Failed to save");
+      if (!res.ok || !data.success) throw new Error(data.error ?? "Failed to save");
 
       // Reset conversation; keep session context
       setMessages([]);

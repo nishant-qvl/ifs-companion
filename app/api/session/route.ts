@@ -4,11 +4,19 @@ import { saveSessionSummary } from "@/lib/notion";
 import type { SessionEndRequest } from "@/lib/types";
 
 export const runtime = "nodejs";
+export const maxDuration = 60;
 
 const client = new Anthropic();
 
 export async function POST(req: NextRequest) {
-  const { messages }: SessionEndRequest = await req.json();
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const { messages } = body as SessionEndRequest;
 
   if (!messages || messages.length === 0) {
     return NextResponse.json(
@@ -17,36 +25,60 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Generate a concise session summary
-  const summaryResponse = await client.messages.create({
-    model: "claude-sonnet-4-6",
-    max_tokens: 400,
-    system:
-      "You summarize conversations in 2-3 sentences. Be factual and concise. " +
-      "Focus on what was discussed and any decisions or outcomes.",
-    messages: [
-      ...messages,
+  try {
+    const summaryResponse = await client.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 400,
+      system:
+        "You summarize conversations in 2-3 sentences. Be factual and concise. " +
+        "Focus on what was discussed and any decisions or outcomes.",
+      messages: [
+        ...messages,
+        {
+          role: "user",
+          content:
+            "Please provide a 2-3 sentence summary of our conversation above.",
+        },
+      ],
+    });
+
+    const summaryBlock = summaryResponse.content.find((b) => b.type === "text");
+    const summary = summaryBlock?.type === "text" ? summaryBlock.text : "";
+
+    const date = new Date();
+    const title = `Session — ${date.toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    })}`;
+
+    try {
+      await saveSessionSummary(title, summary);
+    } catch (notionErr) {
+      console.error("Notion save failed:", notionErr);
+      // Still return success with the summary so the UI isn't broken,
+      // but surface the Notion error in the response.
+      return NextResponse.json(
+        {
+          success: false,
+          summary,
+          title,
+          error: `Session summarized but Notion save failed: ${notionErr instanceof Error ? notionErr.message : String(notionErr)}`,
+        },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({ success: true, summary, title });
+  } catch (err) {
+    console.error("Session summarization failed:", err);
+    return NextResponse.json(
       {
-        role: "user",
-        content:
-          "Please provide a 2-3 sentence summary of our conversation above.",
+        error: `Failed to summarize session: ${err instanceof Error ? err.message : String(err)}`,
       },
-    ],
-  });
-
-  const summaryBlock = summaryResponse.content.find((b) => b.type === "text");
-  const summary = summaryBlock?.type === "text" ? summaryBlock.text : "";
-
-  const date = new Date();
-  const title = `Session — ${date.toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  })}`;
-
-  await saveSessionSummary(title, summary);
-
-  return NextResponse.json({ success: true, summary, title });
+      { status: 500 }
+    );
+  }
 }
