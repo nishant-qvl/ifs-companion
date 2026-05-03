@@ -1,12 +1,26 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { NextRequest, NextResponse } from "next/server";
 import { saveSessionSummary } from "@/lib/notion";
-import type { SessionEndRequest } from "@/lib/types";
+import type { SessionEndRequest, SessionAnalysis } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
 const client = new Anthropic();
+
+const ANALYSIS_PROMPT = `Analyze this IFS therapy conversation and return ONLY a JSON object with these exact fields:
+
+{
+  "partActive": one or more of ["Young Guardian", "Fixer", "Critic", "Judge-Comparer", "Defender", "Thinker", "Help-Seeker", "Withdrawer", "Escapist-Procrastinator", "Addicted Part", "Connector", "Nurturer", "Multiple"],
+  "patternRecognized": one of ["Destructive Sequence", "Fear Catch-22", "Judge-Comparer Sabotage", "Thinker Planning Loop", "Power Trap", "Withdrawal Cycle", "Mental Age Regression", "None"],
+  "moodIn": one of ["Activated", "Foggy", "Anxious", "Flat", "Okay"],
+  "moodOut": one of ["Calmer", "Clearer", "Same", "Needed more time"],
+  "resolution": one of ["Self-energy accessed", "Part acknowledged", "Still processing", "Needed space"],
+  "trigger": short string describing what activated the part,
+  "insight": short string describing what was understood
+}
+
+Return ONLY valid JSON, no explanation, no markdown.`;
 
 export async function POST(req: NextRequest) {
   let body: unknown;
@@ -26,24 +40,34 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const summaryResponse = await client.messages.create({
+    const analysisResponse = await client.messages.create({
       model: "claude-sonnet-4-6",
-      max_tokens: 400,
-      system:
-        "You summarize conversations in 2-3 sentences. Be factual and concise. " +
-        "Focus on what was discussed and any decisions or outcomes.",
+      max_tokens: 512,
+      system: ANALYSIS_PROMPT,
       messages: [
         ...messages,
         {
           role: "user",
-          content:
-            "Please provide a 2-3 sentence summary of our conversation above.",
+          content: "Analyze the conversation above and return the JSON.",
         },
       ],
     });
 
-    const summaryBlock = summaryResponse.content.find((b) => b.type === "text");
-    const summary = summaryBlock?.type === "text" ? summaryBlock.text : "";
+    const textBlock = analysisResponse.content.find((b) => b.type === "text");
+    const rawText = textBlock?.type === "text" ? textBlock.text.trim() : "";
+
+    let analysis: SessionAnalysis;
+    try {
+      // Strip any accidental markdown fences before parsing
+      const cleaned = rawText.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+      analysis = JSON.parse(cleaned) as SessionAnalysis;
+    } catch {
+      console.error("Failed to parse analysis JSON:", rawText);
+      return NextResponse.json(
+        { error: `Model returned invalid JSON: ${rawText.slice(0, 200)}` },
+        { status: 500 }
+      );
+    }
 
     const date = new Date();
     const title = `Session — ${date.toLocaleDateString("en-US", {
@@ -55,28 +79,26 @@ export async function POST(req: NextRequest) {
     })}`;
 
     try {
-      await saveSessionSummary(title, summary);
+      await saveSessionSummary(title, analysis);
     } catch (notionErr) {
       console.error("Notion save failed:", notionErr);
-      // Still return success with the summary so the UI isn't broken,
-      // but surface the Notion error in the response.
       return NextResponse.json(
         {
           success: false,
-          summary,
+          analysis,
           title,
-          error: `Session summarized but Notion save failed: ${notionErr instanceof Error ? notionErr.message : String(notionErr)}`,
+          error: `Session analyzed but Notion save failed: ${notionErr instanceof Error ? notionErr.message : String(notionErr)}`,
         },
         { status: 500 }
       );
     }
 
-    return NextResponse.json({ success: true, summary, title });
+    return NextResponse.json({ success: true, analysis, title });
   } catch (err) {
-    console.error("Session summarization failed:", err);
+    console.error("Session analysis failed:", err);
     return NextResponse.json(
       {
-        error: `Failed to summarize session: ${err instanceof Error ? err.message : String(err)}`,
+        error: `Failed to analyze session: ${err instanceof Error ? err.message : String(err)}`,
       },
       { status: 500 }
     );

@@ -4,6 +4,7 @@ import type {
   PageObjectResponse,
   RichTextItemResponse,
 } from "@notionhq/client/build/src/api-endpoints";
+import type { SessionAnalysis } from "./types";
 
 let notion: Client | null = null;
 
@@ -126,12 +127,32 @@ export async function getRecentSessionsContext(limit = 5): Promise<string> {
   }
 }
 
+function analysisToSummaryText(analysis: SessionAnalysis): string {
+  const parts = Array.isArray(analysis.partActive)
+    ? analysis.partActive.join(", ")
+    : analysis.partActive;
+  return [
+    `Trigger: ${analysis.trigger}`,
+    `Insight: ${analysis.insight}`,
+    `Part: ${parts}`,
+    `Pattern: ${analysis.patternRecognized}`,
+    `Mood: ${analysis.moodIn} → ${analysis.moodOut}`,
+    `Resolution: ${analysis.resolution}`,
+  ].join(" | ");
+}
+
 export async function saveSessionSummary(
   title: string,
-  summary: string
+  analysis: SessionAnalysis
 ): Promise<void> {
   const dbId = process.env.NOTION_SESSION_LOG_DB_ID;
   if (!dbId) throw new Error("NOTION_SESSION_LOG_DB_ID not set");
+
+  const titleProp = process.env.NOTION_TITLE_PROP ?? "Name";
+  const summaryProp = process.env.NOTION_SUMMARY_PROP ?? "Summary";
+  const dateProp = process.env.NOTION_DATE_PROP ?? "Date";
+
+  const summaryText = analysisToSummaryText(analysis);
 
   const client = getClient();
   await client.pages.create({
@@ -140,8 +161,8 @@ export async function saveSessionSummary(
       "Session Title": {
         title: [{ text: { content: title } }],
       },
-      "Notes": {
-        rich_text: [{ text: { content: summary.slice(0, 2000) } }],
+      [summaryProp]: {
+        rich_text: [{ text: { content: summaryText.slice(0, 2000) } }],
       },
       "Date": {
         date: { start: new Date().toISOString().split("T")[0] },
