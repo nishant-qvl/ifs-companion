@@ -133,23 +133,20 @@ export async function saveSessionSummary(
   const dbId = process.env.NOTION_SESSION_LOG_DB_ID;
   if (!dbId) throw new Error("NOTION_SESSION_LOG_DB_ID not set");
 
-  const titleProp = process.env.NOTION_TITLE_PROP ?? "Name";
-  const summaryProp = process.env.NOTION_SUMMARY_PROP ?? "Summary";
-  const dateProp = process.env.NOTION_DATE_PROP ?? "Date";
-
   const client = getClient();
   await client.pages.create({
     parent: { database_id: dbId },
     properties: {
-      [titleProp]: {
+      "Session Title": {
         title: [{ text: { content: title } }],
       },
-      [summaryProp]: {
+      "Notes": {
         rich_text: [{ text: { content: summary.slice(0, 2000) } }],
       },
-      [dateProp]: {
+      "Date": {
         date: { start: new Date().toISOString().split("T")[0] },
       },
     },
   });
+}
 }
